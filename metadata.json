@@ -1,0 +1,6 @@
+{
+  "name": "باقة العائلة",
+  "description": "مدير باقة الإنترنت المنزلية للواي فاي مع مزامنة فورية عبر Firebase وحماية VPN محلية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
