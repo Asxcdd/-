@@ -1,4 +1,4 @@
-# Family Quota PC (`FamilyQuotaPC.exe`) — Build Instructions
+# Family Quota PC (`FamilyQuotaPC.exe`) — Production Build Instructions
 
 ## 1. Install Dependencies (Windows 10 / 11)
 ```powershell
@@ -8,13 +8,9 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## 2. Firebase Realtime Database URL
-`main.py` is already configured with `https://limit-app-fb76a-default-rtdb.europe-west1.firebasedatabase.app` (and can also be adjusted from the Login screen if needed).
-
-> You can also test immediately offline using the built-in Demo Account:
-> - **Username:** `test`
-> - **Password:** `123`
-> - **Quota:** `50` MB
+## 2. Production Firebase Configuration
+`main.py` is hardcoded to your production Firebase Realtime Database:
+`https://limit-app-fb76a-default-rtdb.europe-west1.firebasedatabase.app`
 
 ## 3. Build Single-File `.exe` with Admin UAC Manifest
 Run PyInstaller with `--uac-admin` so Windows prompts for Administrator privileges automatically on launch:

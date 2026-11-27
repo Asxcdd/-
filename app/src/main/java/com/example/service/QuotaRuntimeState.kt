@@ -90,11 +90,6 @@ object QuotaServiceController {
         ContextCompat.startForegroundService(context, intent)
     }
 
-    fun setDemoQuotaExhausted(context: Context, exhausted: Boolean) {
-        val intent = QuotaMonitorService.createDemoSimulationIntent(context, exhausted)
-        ContextCompat.startForegroundService(context, intent)
-    }
-
     fun activateAllowVpn(context: Context) {
         if (!isVpnPermissionGranted(context)) {
             QuotaRuntimeState.update { it.copy(vpnPermissionGranted = false) }
@@ -121,6 +116,7 @@ object QuotaServiceController {
 
     fun stopAllProtection(context: Context) {
         context.stopService(Intent(context, QuotaMonitorService::class.java))
+        QuotaMonitorService.clearTrafficDeltaPrefs(context)
         val stopVpnIntent = Intent(context, QuotaVpnService::class.java).apply {
             action = QuotaVpnService.ACTION_STOP_OR_LOCK_ON_LOGOUT
             putExtra(QuotaVpnService.EXTRA_APP_STARTED, true)

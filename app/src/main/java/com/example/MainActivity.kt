@@ -136,7 +136,6 @@ class MainActivity : ComponentActivity() {
                                 LoginScreen(
                                     isLoggingIn = uiState.isLoggingIn,
                                     loginError = uiState.loginError,
-                                    isFirebaseConfigured = uiState.snapshot.isFirebaseConfigured,
                                     contentPadding = innerPadding,
                                     onLogin = { user, pass ->
                                         viewModel.login(user, pass) {
@@ -200,9 +199,6 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onOpenSetupGuide = { viewModel.setShowSetupGuide(true) },
                                     onSyncNow = { viewModel.syncNow() },
-                                    onToggleDemoSimulation = { exhausted ->
-                                        viewModel.toggleDemoQuotaSimulation(exhausted)
-                                    },
                                     onLogout = { viewModel.logout() }
                                 )
                             }

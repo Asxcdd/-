@@ -22,16 +22,13 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Person
-import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
-import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -43,7 +40,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,14 +60,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.R
-import com.example.data.DEMO_PASSWORD
-import com.example.data.DEMO_USERNAME
 
 @Composable
 fun LoginScreen(
     isLoggingIn: Boolean,
     loginError: String?,
-    isFirebaseConfigured: Boolean,
     contentPadding: PaddingValues,
     onLogin: (username: String, password: String) -> Unit,
     onClearError: () -> Unit,
@@ -95,7 +88,7 @@ fun LoginScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Hero Banner Card
             Box(
@@ -106,7 +99,7 @@ fun LoginScreen(
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.img_quota_shield_banner_1795730044325),
-                    contentDescription = "شعار درع باقة العائلة",
+                    contentDescription = "شعار درع جيجاتك",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -146,13 +139,13 @@ fun LoginScreen(
                             )
                         }
                         Text(
-                            text = "باقة العائلة",
+                            text = "حماية باقة الواي فاي",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
                     Text(
-                        text = "مدير باقة الإنترنت",
+                        text = "جيجاتك",
                         style = MaterialTheme.typography.headlineMedium,
                         color = Color.White
                     )
@@ -164,108 +157,7 @@ fun LoginScreen(
                 }
             }
 
-            // Built-in Demo Account Card
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Science,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "حساب تجريبي جاهز (بدون Firebase)",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Text(
-                            text = "المستخدم: test • كلمة المرور: 123 • الباقة: 50 ميجابايت",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                        )
-                    }
-                    TextButton(
-                        onClick = {
-                            username = DEMO_USERNAME
-                            password = DEMO_PASSWORD
-                            if (loginError != null) onClearError()
-                        },
-                        modifier = Modifier.testTag("fill_demo_button")
-                    ) {
-                        Text("تعبئة")
-                    }
-                }
-            }
-
-            // Firebase Status Pill
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = if (isFirebaseConfigured) {
-                    MaterialTheme.colorScheme.secondaryContainer
-                } else {
-                    MaterialTheme.colorScheme.tertiaryContainer
-                },
-                onClick = onOpenSetupGuide,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        imageVector = if (isFirebaseConfigured) {
-                            Icons.Rounded.CheckCircle
-                        } else {
-                            Icons.Rounded.WarningAmber
-                        },
-                        contentDescription = null,
-                        tint = if (isFirebaseConfigured) {
-                            MaterialTheme.colorScheme.onSecondaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onTertiaryContainer
-                        }
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (isFirebaseConfigured) {
-                                "قاعدة بيانات Firebase جاهزة"
-                            } else {
-                                "إعداد Firebase مطلوب للحسابات السحابية"
-                            },
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (isFirebaseConfigured) {
-                                MaterialTheme.colorScheme.onSecondaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onTertiaryContainer
-                            }
-                        )
-                        Text(
-                            text = if (isFirebaseConfigured) {
-                                "اضغط لعرض بنية البيانات users/{username}"
-                            } else {
-                                "أضف app/google-services.json • اضغط لعرض خطوات الإعداد"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (isFirebaseConfigured) {
-                                MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
-                            } else {
-                                MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
-                            }
-                        )
-                    }
-                }
-            }
-
-            // Login Form Card
+            // Login Form Card (Username & Password only)
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -289,7 +181,7 @@ fun LoginScreen(
                             if (loginError != null) onClearError()
                         },
                         label = { Text("اسم المستخدم") },
-                        placeholder = { Text("مثال: test أو alex") },
+                        placeholder = { Text("مثال: alex") },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Rounded.Person,
@@ -418,7 +310,7 @@ fun LoginScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.size(8.dp))
-                        Text("دليل إعداد Firebase و google-services.json")
+                        Text("بنية قاعدة البيانات (Firebase)")
                     }
                 }
             }

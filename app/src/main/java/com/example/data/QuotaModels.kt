@@ -1,39 +1,35 @@
 package com.example.data
 
 import java.util.Locale
+import kotlin.math.roundToLong
 
 const val BYTES_PER_MB: Long = 1024L * 1024L
 const val BYTES_PER_GB: Long = 1024L * 1024L * 1024L
 
-const val DEMO_USERNAME = "test"
-const val DEMO_PASSWORD = "123"
-const val DEMO_QUOTA_LIMIT_MB = 50L
+fun roundMbTo2Decimals(mb: Double): Double {
+    val safe = mb.coerceAtLeast(0.0)
+    return (safe * 100.0).roundToLong() / 100.0
+}
 
 data class UserQuotaRecord(
     val username: String,
     val quotaLimitMb: Long,
-    val usedMb: Long,
+    val usedMb: Double,
     val isActive: Boolean,
-    val sessionStartTimestamp: Long = System.currentTimeMillis(),
-    val isDemo: Boolean = false
+    val sessionStartTimestamp: Long = System.currentTimeMillis()
 )
 
 data class PersistedSession(
     val isLoggedIn: Boolean = false,
     val username: String = "",
-    val isDemo: Boolean = false,
     val quotaLimitMb: Long = 0L,
-    val usedMb: Long = 0L,
+    val usedMb: Double = 0.0,
     val isActive: Boolean = false,
     val sessionStartTimestamp: Long = 0L,
-    val simulatedExtraBytes: Long = 0L,
     val lastSyncEpochMs: Long = 0L
 ) {
     val effectiveUsedBytes: Long
-        get() = (usedMb.coerceAtLeast(0L) * BYTES_PER_MB) + simulatedExtraBytes.coerceAtLeast(0L)
-
-    val effectiveUsedMb: Long
-        get() = effectiveUsedBytes / BYTES_PER_MB
+        get() = (usedMb.coerceAtLeast(0.0) * BYTES_PER_MB).roundToLong()
 
     val shouldBlockTraffic: Boolean
         get() = !isLoggedIn || !isActive || effectiveUsedBytes >= (quotaLimitMb.coerceAtLeast(0L) * BYTES_PER_MB)
@@ -42,7 +38,6 @@ data class PersistedSession(
 data class QuotaStatusSnapshot(
     val isLoggedIn: Boolean = false,
     val username: String = "",
-    val isDemo: Boolean = false,
     val quotaLimitMb: Long = 0L,
     val usedBytes: Long = 0L,
     val isActive: Boolean = false,
@@ -59,8 +54,8 @@ data class QuotaStatusSnapshot(
     val syncStatusMessage: String = "",
     val isFirebaseConfigured: Boolean = true
 ) {
-    val effectiveUsedMb: Long
-        get() = usedBytes.coerceAtLeast(0L) / BYTES_PER_MB
+    val effectiveUsedMb: Double
+        get() = roundMbTo2Decimals(usedBytes.coerceAtLeast(0L).toDouble() / BYTES_PER_MB.toDouble())
 
     val quotaLimitBytes: Long
         get() = quotaLimitMb.coerceAtLeast(0L) * BYTES_PER_MB
@@ -102,7 +97,7 @@ object DataFormatter {
                 String.format(Locale.US, "%.2f جيجابايت", safeBytes.toDouble() / BYTES_PER_GB.toDouble())
             }
             safeBytes >= BYTES_PER_MB -> {
-                String.format(Locale.US, "%.1f ميجابايت", safeBytes.toDouble() / BYTES_PER_MB.toDouble())
+                String.format(Locale.US, "%.2f ميجابايت", safeBytes.toDouble() / BYTES_PER_MB.toDouble())
             }
             safeBytes >= 1024L -> {
                 String.format(Locale.US, "%.0f كيلوبايت", safeBytes.toDouble() / 1024.0)

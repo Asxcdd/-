@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -21,25 +22,23 @@ class QuotaPreferences(private val context: Context) {
     private object Keys {
         val IS_LOGGED_IN = booleanPreferencesKey("is_logged_in")
         val USERNAME = stringPreferencesKey("username")
-        val IS_DEMO = booleanPreferencesKey("is_demo")
         val QUOTA_LIMIT_MB = longPreferencesKey("quota_limit_mb")
-        val USED_MB = longPreferencesKey("used_mb")
+        val USED_MB_LEGACY = longPreferencesKey("used_mb")
+        val USED_MB = doublePreferencesKey("used_mb_double")
         val IS_ACTIVE = booleanPreferencesKey("is_active")
         val SESSION_START_TS = longPreferencesKey("session_start_timestamp")
-        val SIMULATED_EXTRA_BYTES = longPreferencesKey("simulated_extra_bytes")
         val LAST_SYNC_EPOCH_MS = longPreferencesKey("last_sync_epoch_ms")
     }
 
     val sessionFlow: Flow<PersistedSession> = context.quotaDataStore.data.map { prefs ->
+        val usedDouble = prefs[Keys.USED_MB] ?: (prefs[Keys.USED_MB_LEGACY]?.toDouble() ?: 0.0)
         PersistedSession(
             isLoggedIn = prefs[Keys.IS_LOGGED_IN] ?: false,
             username = prefs[Keys.USERNAME] ?: "",
-            isDemo = prefs[Keys.IS_DEMO] ?: false,
             quotaLimitMb = prefs[Keys.QUOTA_LIMIT_MB] ?: 0L,
-            usedMb = prefs[Keys.USED_MB] ?: 0L,
+            usedMb = roundMbTo2Decimals(usedDouble),
             isActive = prefs[Keys.IS_ACTIVE] ?: false,
             sessionStartTimestamp = prefs[Keys.SESSION_START_TS] ?: 0L,
-            simulatedExtraBytes = prefs[Keys.SIMULATED_EXTRA_BYTES] ?: 0L,
             lastSyncEpochMs = prefs[Keys.LAST_SYNC_EPOCH_MS] ?: 0L
         )
     }
@@ -50,25 +49,23 @@ class QuotaPreferences(private val context: Context) {
         context.quotaDataStore.edit { prefs ->
             prefs[Keys.IS_LOGGED_IN] = true
             prefs[Keys.USERNAME] = record.username
-            prefs[Keys.IS_DEMO] = record.isDemo
             prefs[Keys.QUOTA_LIMIT_MB] = record.quotaLimitMb
-            prefs[Keys.USED_MB] = record.usedMb
+            prefs[Keys.USED_MB] = roundMbTo2Decimals(record.usedMb)
             prefs[Keys.IS_ACTIVE] = record.isActive
             prefs[Keys.SESSION_START_TS] = record.sessionStartTimestamp
-            prefs[Keys.SIMULATED_EXTRA_BYTES] = 0L
             prefs[Keys.LAST_SYNC_EPOCH_MS] = System.currentTimeMillis()
         }
     }
 
     suspend fun updateRemoteQuota(
         quotaLimitMb: Long,
-        usedMb: Long,
+        usedMb: Double,
         isActive: Boolean,
         sessionStartTimestamp: Long
     ) {
         context.quotaDataStore.edit { prefs ->
             prefs[Keys.QUOTA_LIMIT_MB] = quotaLimitMb
-            prefs[Keys.USED_MB] = usedMb
+            prefs[Keys.USED_MB] = roundMbTo2Decimals(usedMb)
             prefs[Keys.IS_ACTIVE] = isActive
             if (sessionStartTimestamp > 0L) {
                 prefs[Keys.SESSION_START_TS] = sessionStartTimestamp
@@ -76,23 +73,10 @@ class QuotaPreferences(private val context: Context) {
         }
     }
 
-    suspend fun updateLocalUsage(usedMb: Long, syncEpochMs: Long) {
+    suspend fun updateLocalUsage(usedMb: Double, syncEpochMs: Long) {
         context.quotaDataStore.edit { prefs ->
-            prefs[Keys.USED_MB] = usedMb.coerceAtLeast(0L)
+            prefs[Keys.USED_MB] = roundMbTo2Decimals(usedMb)
             prefs[Keys.LAST_SYNC_EPOCH_MS] = syncEpochMs
-        }
-    }
-
-    suspend fun setDemoSimulation(
-        simulatedExtraBytes: Long,
-        usedMb: Long,
-        sessionStartTimestamp: Long
-    ) {
-        context.quotaDataStore.edit { prefs ->
-            prefs[Keys.SIMULATED_EXTRA_BYTES] = simulatedExtraBytes.coerceAtLeast(0L)
-            prefs[Keys.USED_MB] = usedMb.coerceAtLeast(0L)
-            prefs[Keys.SESSION_START_TS] = sessionStartTimestamp
-            prefs[Keys.LAST_SYNC_EPOCH_MS] = System.currentTimeMillis()
         }
     }
 

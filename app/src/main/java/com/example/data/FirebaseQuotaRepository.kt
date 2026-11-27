@@ -57,25 +57,6 @@ class FirebaseQuotaRepository(private val context: Context) {
         if (rawPassword.isEmpty()) {
             return AuthResult.InvalidCredentials
         }
-
-        // Built-in Demo/Test Account (works immediately without Firebase)
-        if (username == DEMO_USERNAME) {
-            return if (constantTimeEquals(DEMO_PASSWORD, rawPassword)) {
-                AuthResult.Success(
-                    UserQuotaRecord(
-                        username = DEMO_USERNAME,
-                        quotaLimitMb = DEMO_QUOTA_LIMIT_MB,
-                        usedMb = 0L,
-                        isActive = true,
-                        sessionStartTimestamp = System.currentTimeMillis(),
-                        isDemo = true
-                    )
-                )
-            } else {
-                AuthResult.InvalidCredentials
-            }
-        }
-
         if (!isFirebaseConfigured()) {
             return AuthResult.NotConfigured
         }
@@ -126,10 +107,6 @@ class FirebaseQuotaRepository(private val context: Context) {
             close()
             return@callbackFlow
         }
-        if (username == DEMO_USERNAME) {
-            close()
-            return@callbackFlow
-        }
         if (!isFirebaseConfigured()) {
             trySend(QuotaRemoteUpdate.NotConfigured)
             close()
@@ -164,9 +141,8 @@ class FirebaseQuotaRepository(private val context: Context) {
         }
     }
 
-    suspend fun updateUsedMb(rawUsername: String, usedMb: Long): Result<Unit> {
+    suspend fun updateUsedMb(rawUsername: String, usedMb: Double): Result<Unit> {
         val username = rawUsername.trim()
-        if (username == DEMO_USERNAME) return Result.success(Unit)
         if (!isValidUsername(username)) {
             return Result.failure(IllegalArgumentException("اسم المستخدم غير صالح"))
         }
@@ -174,10 +150,11 @@ class FirebaseQuotaRepository(private val context: Context) {
             return Result.failure(IllegalStateException("لم يتم إعداد Firebase"))
         }
 
+        val roundedMb = roundMbTo2Decimals(usedMb)
         return try {
             val usedMbRef = usersRef().child(username).child("used_mb")
             suspendCancellableCoroutine { continuation ->
-                usedMbRef.setValue(usedMb.coerceAtLeast(0L))
+                usedMbRef.setValue(roundedMb)
                     .addOnSuccessListener {
                         if (continuation.isActive) {
                             continuation.resume(Result.success(Unit))
@@ -196,17 +173,29 @@ class FirebaseQuotaRepository(private val context: Context) {
 
     private fun parseUserRecord(username: String, snapshot: DataSnapshot): UserQuotaRecord {
         val quotaLimitMb = snapshot.child("quota_limit_mb").toLongSafe(0L)
-        val usedMb = snapshot.child("used_mb").toLongSafe(0L)
+        val usedMb = roundMbTo2Decimals(snapshot.child("used_mb").toDoubleSafe(0.0))
         val isActive = snapshot.child("is_active").getValue(Boolean::class.java) ?: false
         val sessionStartTs = snapshot.child("session_start_timestamp").toLongSafe(0L)
         return UserQuotaRecord(
             username = username,
             quotaLimitMb = quotaLimitMb.coerceAtLeast(0L),
-            usedMb = usedMb.coerceAtLeast(0L),
+            usedMb = usedMb,
             isActive = isActive,
-            sessionStartTimestamp = sessionStartTs,
-            isDemo = false
+            sessionStartTimestamp = sessionStartTs
         )
+    }
+
+    private fun DataSnapshot.toDoubleSafe(default: Double): Double {
+        val raw = value ?: return default
+        return when (raw) {
+            is Double -> raw
+            is Float -> raw.toDouble()
+            is Long -> raw.toDouble()
+            is Int -> raw.toDouble()
+            is Number -> raw.toDouble()
+            is String -> raw.toDoubleOrNull() ?: default
+            else -> default
+        }
     }
 
     private fun DataSnapshot.toLongSafe(default: Long): Long {

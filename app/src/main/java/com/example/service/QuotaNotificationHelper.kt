@@ -46,7 +46,7 @@ object QuotaNotificationHelper {
         val limitText = DataFormatter.formatMb(snapshot.quotaLimitMb)
 
         val title = when {
-            !snapshot.isLoggedIn -> "باقة العائلة • غير مسجل الدخول"
+            !snapshot.isLoggedIn -> "جيجاتك • غير مسجل الدخول"
             snapshot.blockReason == BlockReason.ACCOUNT_DISABLED -> "تم إيقاف الإنترنت - الحساب موقوف"
             snapshot.shouldBlockTraffic -> "تم إيقاف الإنترنت - انتهت الباقة"
             else -> "الباقة المتبقية: $remainingText"
@@ -103,7 +103,7 @@ object QuotaNotificationHelper {
         val text = if (isBlocking) {
             "جدار الحماية المحلي (10.0.0.2) نشط ويمنع اتصال جميع التطبيقات."
         } else {
-            "باقة العائلة VPN نشط • الإنترنت يعمل بالسرعة الكاملة."
+            "جيجاتك VPN نشط • الإنترنت يعمل بالسرعة الكاملة."
         }
 
         return NotificationCompat.Builder(context, CHANNEL_ID)

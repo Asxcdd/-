@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.roundToLong
 
 data class MainUiState(
     val isInitializing: Boolean = true,
@@ -71,7 +72,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         isLoggedIn = true,
                         username = session.username,
-                        isDemo = session.isDemo,
                         quotaLimitMb = session.quotaLimitMb,
                         usedBytes = session.effectiveUsedBytes,
                         isActive = session.isActive,
@@ -107,19 +107,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             isLoggedIn = true,
                             username = record.username,
-                            isDemo = record.isDemo,
                             quotaLimitMb = record.quotaLimitMb,
-                            usedBytes = record.usedMb * BYTES_PER_MB,
+                            usedBytes = (record.usedMb * BYTES_PER_MB).roundToLong(),
                             isActive = record.isActive,
                             sessionStartTimestamp = record.sessionStartTimestamp,
                             lastSyncEpochMs = System.currentTimeMillis(),
-                            syncStatusMessage = if (record.isDemo) {
-                                "وضع الحساب التجريبي (محلي)"
-                            } else {
-                                "مزامنة Firebase المباشرة نشطة"
-                            }
+                            syncStatusMessage = "مزامنة Firebase المباشرة نشطة"
                         )
                     }
+                    QuotaServiceController.startProtection(appContext)
                     uiFlags.update { it.copy(isLoggingIn = false, loginError = null) }
                     onRequireVpnPermissionCheck()
                 }
@@ -146,7 +142,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     uiFlags.update {
                         it.copy(
                             isLoggingIn = false,
-                            loginError = "لم يتم إعداد Firebase بعد. أضف ملف google-services.json في مجلد app/ أو جرّب الحساب التجريبي (test / 123)."
+                            loginError = "تعذر الاتصال بـ Firebase. تأكد من وجود ملف google-services.json في مجلد app/."
                         )
                     }
                 }
@@ -184,10 +180,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun syncNow() {
         QuotaServiceController.requestImmediateSync(appContext)
-    }
-
-    fun toggleDemoQuotaSimulation(exhausted: Boolean) {
-        QuotaServiceController.setDemoQuotaExhausted(appContext, exhausted)
     }
 
     fun logout() {

@@ -4,6 +4,7 @@ import android.app.Service
 import android.app.usage.NetworkStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
@@ -18,6 +19,7 @@ import com.example.data.BYTES_PER_MB
 import com.example.data.FirebaseQuotaRepository
 import com.example.data.QuotaPreferences
 import com.example.data.QuotaRemoteUpdate
+import com.example.data.roundMbTo2Decimals
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,16 +30,25 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToLong
 
 class QuotaMonitorService : Service() {
 
     companion object {
         const val ACTION_START = "com.example.service.ACTION_START_MONITOR"
         const val ACTION_FORCE_SYNC = "com.example.service.ACTION_FORCE_SYNC"
-        const val ACTION_SET_DEMO_SIMULATION = "com.example.service.ACTION_SET_DEMO_SIMULATION"
-        const val EXTRA_SIMULATE_EXHAUSTED = "extra_simulate_exhausted"
-        private const val POLL_INTERVAL_MS = 2_000L
-        private const val SYNC_INTERVAL_MS = 60_000L
+        const val TRAFFIC_PREFS_NAME = "quota_traffic_delta_prefs"
+
+        private const val KEY_ACTIVE_USER = "active_user"
+        private const val KEY_BASE_USED_BYTES = "base_used_bytes"
+        private const val KEY_PENDING_DELTA_BYTES = "pending_delta_bytes"
+        private const val KEY_LAST_TRAFFIC_TOTAL = "last_traffic_total_bytes"
+        private const val KEY_INITIAL_FIREBASE_BYTES = "initial_firebase_bytes"
+        private const val KEY_STATS_WINDOW_START_MS = "stats_window_start_ms"
+
+        private const val MONITOR_LOOP_INTERVAL_MS = 15_000L
 
         fun createStartIntent(context: Context): Intent {
             return Intent(context, QuotaMonitorService::class.java).apply {
@@ -51,11 +62,11 @@ class QuotaMonitorService : Service() {
             }
         }
 
-        fun createDemoSimulationIntent(context: Context, exhausted: Boolean): Intent {
-            return Intent(context, QuotaMonitorService::class.java).apply {
-                action = ACTION_SET_DEMO_SIMULATION
-                putExtra(EXTRA_SIMULATE_EXHAUSTED, exhausted)
-            }
+        fun clearTrafficDeltaPrefs(context: Context) {
+            context.getSharedPreferences(TRAFFIC_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .apply()
         }
     }
 
@@ -63,6 +74,7 @@ class QuotaMonitorService : Service() {
     private val stateMutex = Mutex()
 
     private lateinit var preferences: QuotaPreferences
+    private lateinit var trafficPrefs: SharedPreferences
     private lateinit var firebaseRepo: FirebaseQuotaRepository
     private lateinit var connectivityManager: ConnectivityManager
     private var networkStatsManager: NetworkStatsManager? = null
@@ -72,27 +84,27 @@ class QuotaMonitorService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private var activeUsername: String = ""
-    private var isDemoAccount: Boolean = false
     private var quotaLimitMb: Long = 0L
-    private var firebaseUsedMb: Long = 0L
+    private var firebaseUsedMb: Double = 0.0
     private var currentUsedBytes: Long = 0L
-    private var simulatedExtraBytes: Long = 0L
     private var userIsActive: Boolean = false
     private var sessionStartTimestamp: Long = 0L
+    private var statsWindowStartMs: Long = 0L
+    private var initialFirebaseBytes: Long = 0L
     private var isWifiConnected: Boolean = false
     private var lastSyncEpochMs: Long = 0L
     private var syncStatusMessage: String = "جاري المراقبة المباشرة"
     private var lastNotifiedRemainingMb: Long = -1L
     private var lastNotifiedBlockedState: Boolean? = null
 
-    // Fallback delta tracking if Usage Access permission is not yet granted
-    private var fallbackPendingBytes: Long = 0L
-    private var lastRxBytes: Long = -1L
-    private var lastTxBytes: Long = -1L
+    private var baseUsedBytes: Long = 0L
+    private var pendingDeltaBytes: Long = 0L
+    private var lastTrafficTotalBytes: Long = -1L
 
     override fun onCreate() {
         super.onCreate()
         preferences = QuotaPreferences(applicationContext)
+        trafficPrefs = applicationContext.getSharedPreferences(TRAFFIC_PREFS_NAME, Context.MODE_PRIVATE)
         firebaseRepo = FirebaseQuotaRepository(applicationContext)
         connectivityManager = getSystemService(ConnectivityManager::class.java)
         networkStatsManager = getSystemService(NetworkStatsManager::class.java)
@@ -103,15 +115,7 @@ class QuotaMonitorService : Service() {
 
         if (intent?.action == ACTION_FORCE_SYNC && isMonitoringStarted) {
             serviceScope.launch {
-                measureWifiUsageAndEvaluate(forceFirebaseSync = true)
-            }
-            return START_STICKY
-        }
-
-        if (intent?.action == ACTION_SET_DEMO_SIMULATION && isMonitoringStarted) {
-            val exhausted = intent.getBooleanExtra(EXTRA_SIMULATE_EXHAUSTED, false)
-            serviceScope.launch {
-                applyDemoSimulation(exhausted)
+                measureWifiUsageAndSync(forceFirebaseSync = true)
             }
             return START_STICKY
         }
@@ -154,201 +158,240 @@ class QuotaMonitorService : Service() {
 
             stateMutex.withLock {
                 activeUsername = session.username
-                isDemoAccount = session.isDemo
                 quotaLimitMb = session.quotaLimitMb
-                firebaseUsedMb = session.usedMb
+                firebaseUsedMb = roundMbTo2Decimals(session.usedMb)
                 userIsActive = session.isActive
+                val now = System.currentTimeMillis()
                 sessionStartTimestamp = if (session.sessionStartTimestamp > 0L) {
                     session.sessionStartTimestamp
                 } else {
-                    System.currentTimeMillis()
+                    now
                 }
-                simulatedExtraBytes = session.simulatedExtraBytes
-                currentUsedBytes = session.effectiveUsedBytes
                 lastSyncEpochMs = session.lastSyncEpochMs
                 isWifiConnected = checkCurrentWifiConnected()
-                syncStatusMessage = if (isDemoAccount) {
-                    "وضع الحساب التجريبي (محلي)"
-                } else {
-                    "مزامنة Firebase المباشرة نشطة"
-                }
-                if (isWifiConnected) {
-                    lastRxBytes = safeTotalRxBytes()
-                    lastTxBytes = safeTotalTxBytes()
-                }
+                syncStatusMessage = "مزامنة Firebase المباشرة نشطة"
+
+                restoreOrInitDeltaPrefsLocked(
+                    username = activeUsername,
+                    sessionUsedBytes = session.effectiveUsedBytes,
+                    nowMs = now
+                )
+                currentUsedBytes = (baseUsedBytes + pendingDeltaBytes).coerceAtLeast(0L)
             }
 
-            measureWifiUsageAndEvaluate(forceFirebaseSync = false)
+            measureWifiUsageAndSync(forceFirebaseSync = false)
 
-            // 1. Real-time Firebase ValueEventListener (skipped for demo user)
-            if (!isDemoAccount) {
-                launch {
-                    firebaseRepo.observeUserQuota(activeUsername).collect { update ->
-                        when (update) {
-                            is QuotaRemoteUpdate.Updated -> {
-                                val remote = update.record
-                                var resetBaseline = false
-                                stateMutex.withLock {
-                                    if (remote.sessionStartTimestamp > 0L &&
-                                        remote.sessionStartTimestamp != sessionStartTimestamp
-                                    ) {
-                                        sessionStartTimestamp = remote.sessionStartTimestamp
-                                        fallbackPendingBytes = 0L
-                                        resetBaseline = true
-                                    } else if (remote.usedMb == 0L && firebaseUsedMb > 0L) {
-                                        // Admin cleared used_mb directly
-                                        sessionStartTimestamp = System.currentTimeMillis()
-                                        fallbackPendingBytes = 0L
-                                        resetBaseline = true
+            // 1. Real-time Firebase ValueEventListener
+            launch {
+                firebaseRepo.observeUserQuota(activeUsername).collect { update ->
+                    when (update) {
+                        is QuotaRemoteUpdate.Updated -> {
+                            val remote = update.record
+                            val now = System.currentTimeMillis()
+                            var needsImmediateEnforce = false
+
+                            stateMutex.withLock {
+                                val remoteUsedBytes = (remote.usedMb * BYTES_PER_MB).roundToLong()
+                                val wasResetByAdmin =
+                                    (remote.usedMb <= 0.0 && firebaseUsedMb > 0.0) ||
+                                        (remote.sessionStartTimestamp > 0L &&
+                                            remote.sessionStartTimestamp != sessionStartTimestamp)
+
+                                if (wasResetByAdmin) {
+                                    sessionStartTimestamp = if (remote.sessionStartTimestamp > 0L) {
+                                        remote.sessionStartTimestamp
+                                    } else {
+                                        now
                                     }
-                                    quotaLimitMb = remote.quotaLimitMb
-                                    firebaseUsedMb = remote.usedMb
-                                    userIsActive = remote.isActive
-                                    syncStatusMessage = "تم تحديث البيانات من Firebase"
+                                    baseUsedBytes = remoteUsedBytes
+                                    pendingDeltaBytes = 0L
+                                    initialFirebaseBytes = remoteUsedBytes
+                                    statsWindowStartMs = now
+                                    lastTrafficTotalBytes = safeTotalRxTxBytes()
+                                    currentUsedBytes = remoteUsedBytes
+                                    saveDeltaPrefsLocked()
+                                    needsImmediateEnforce = true
+                                } else if (remoteUsedBytes > currentUsedBytes) {
+                                    // Sync upward if another device (e.g., PC client) or admin increased usage
+                                    baseUsedBytes = remoteUsedBytes
+                                    pendingDeltaBytes = 0L
+                                    initialFirebaseBytes = remoteUsedBytes
+                                    statsWindowStartMs = now
+                                    lastTrafficTotalBytes = safeTotalRxTxBytes()
+                                    currentUsedBytes = remoteUsedBytes
+                                    saveDeltaPrefsLocked()
+                                    needsImmediateEnforce = true
                                 }
-                                if (resetBaseline) {
-                                    lastRxBytes = safeTotalRxBytes()
-                                    lastTxBytes = safeTotalTxBytes()
-                                }
-                                preferences.updateRemoteQuota(
-                                    quotaLimitMb = remote.quotaLimitMb,
-                                    usedMb = remote.usedMb,
-                                    isActive = remote.isActive,
-                                    sessionStartTimestamp = sessionStartTimestamp
-                                )
-                                measureWifiUsageAndEvaluate(forceFirebaseSync = false)
+
+                                quotaLimitMb = remote.quotaLimitMb
+                                firebaseUsedMb = roundMbTo2Decimals(remote.usedMb)
+                                userIsActive = remote.isActive
+                                syncStatusMessage = "تم تحديث البيانات من Firebase"
                             }
 
-                            QuotaRemoteUpdate.UserRemoved -> {
-                                stateMutex.withLock {
-                                    userIsActive = false
-                                    syncStatusMessage = "تم إيقاف الحساب من الإدارة"
-                                }
-                                preferences.updateRemoteQuota(
-                                    quotaLimitMb,
-                                    firebaseUsedMb,
-                                    false,
-                                    sessionStartTimestamp
-                                )
+                            preferences.updateRemoteQuota(
+                                quotaLimitMb = remote.quotaLimitMb,
+                                usedMb = remote.usedMb,
+                                isActive = remote.isActive,
+                                sessionStartTimestamp = sessionStartTimestamp
+                            )
+                            if (needsImmediateEnforce) {
                                 publishAndEnforceState(forceNotify = true)
+                            } else {
+                                measureWifiUsageAndSync(forceFirebaseSync = false)
                             }
+                        }
 
-                            QuotaRemoteUpdate.NotConfigured -> {
-                                stateMutex.withLock {
-                                    syncStatusMessage = "ملف google-services.json غير مضاف"
-                                }
-                                publishRuntimeState()
+                        QuotaRemoteUpdate.UserRemoved -> {
+                            stateMutex.withLock {
+                                userIsActive = false
+                                syncStatusMessage = "تم إيقاف الحساب من الإدارة"
                             }
+                            preferences.updateRemoteQuota(
+                                quotaLimitMb,
+                                firebaseUsedMb,
+                                false,
+                                sessionStartTimestamp
+                            )
+                            publishAndEnforceState(forceNotify = true)
+                        }
 
-                            is QuotaRemoteUpdate.Error -> {
-                                stateMutex.withLock {
-                                    syncStatusMessage = "تحذير المزامنة: ${update.message}"
-                                }
-                                publishRuntimeState()
+                        QuotaRemoteUpdate.NotConfigured -> {
+                            stateMutex.withLock {
+                                syncStatusMessage = "ملف google-services.json غير مضاف"
                             }
+                            publishRuntimeState()
+                        }
+
+                        is QuotaRemoteUpdate.Error -> {
+                            stateMutex.withLock {
+                                syncStatusMessage = "تحذير المزامنة: ${update.message}"
+                            }
+                            publishRuntimeState()
                         }
                     }
                 }
             }
 
-            // 2. High-frequency Wi-Fi NetworkStatsManager loop (2s) for instant cutoff
+            // 2. Reliable 15-second Wi-Fi measurement & Firebase sync loop
             launch {
                 while (isActive) {
-                    delay(POLL_INTERVAL_MS)
-                    measureWifiUsageAndEvaluate(forceFirebaseSync = false)
-                }
-            }
-
-            // 3. Periodic 60-second Firebase sync loop
-            launch {
-                while (isActive) {
-                    delay(SYNC_INTERVAL_MS)
-                    syncUsedMbToFirebase(forceImmediate = true)
+                    delay(MONITOR_LOOP_INTERVAL_MS)
+                    measureWifiUsageAndSync(forceFirebaseSync = true)
                 }
             }
         }
     }
 
-    private suspend fun applyDemoSimulation(exhausted: Boolean) {
-        val newStartTs = System.currentTimeMillis()
-        stateMutex.withLock {
-            if (exhausted) {
-                simulatedExtraBytes = quotaLimitMb * BYTES_PER_MB
-                currentUsedBytes = simulatedExtraBytes
-                syncStatusMessage = "محاكاة: انتهت الباقة (تم الحظر)"
+    private fun restoreOrInitDeltaPrefsLocked(
+        username: String,
+        sessionUsedBytes: Long,
+        nowMs: Long
+    ) {
+        val savedUser = trafficPrefs.getString(KEY_ACTIVE_USER, null)
+        val currentTrafficTotal = safeTotalRxTxBytes()
+
+        if (savedUser == username) {
+            baseUsedBytes = trafficPrefs.getLong(KEY_BASE_USED_BYTES, sessionUsedBytes).coerceAtLeast(sessionUsedBytes)
+            pendingDeltaBytes = trafficPrefs.getLong(KEY_PENDING_DELTA_BYTES, 0L).coerceAtLeast(0L)
+            initialFirebaseBytes = trafficPrefs.getLong(KEY_INITIAL_FIREBASE_BYTES, baseUsedBytes).coerceAtLeast(0L)
+            statsWindowStartMs = trafficPrefs.getLong(KEY_STATS_WINDOW_START_MS, nowMs)
+            val savedTrafficTotal = trafficPrefs.getLong(KEY_LAST_TRAFFIC_TOTAL, -1L)
+
+            // If TrafficStats counter reset (e.g., device reboot), fold previous pending and re-baseline
+            if (currentTrafficTotal >= 0L && savedTrafficTotal >= 0L && currentTrafficTotal < savedTrafficTotal) {
+                baseUsedBytes += pendingDeltaBytes
+                pendingDeltaBytes = 0L
+                initialFirebaseBytes = baseUsedBytes
+                statsWindowStartMs = nowMs
+                lastTrafficTotalBytes = currentTrafficTotal
             } else {
-                simulatedExtraBytes = 0L
-                fallbackPendingBytes = 0L
-                firebaseUsedMb = 0L
-                sessionStartTimestamp = newStartTs
-                currentUsedBytes = 0L
-                lastRxBytes = safeTotalRxBytes()
-                lastTxBytes = safeTotalTxBytes()
-                syncStatusMessage = "تمت إعادة تعيين الباقة التجريبية (50 ميجابايت)"
+                lastTrafficTotalBytes = if (savedTrafficTotal >= 0L) savedTrafficTotal else currentTrafficTotal
             }
+        } else {
+            baseUsedBytes = sessionUsedBytes.coerceAtLeast(0L)
+            pendingDeltaBytes = 0L
+            initialFirebaseBytes = baseUsedBytes
+            statsWindowStartMs = nowMs
+            lastTrafficTotalBytes = currentTrafficTotal
         }
-        preferences.setDemoSimulation(
-            simulatedExtraBytes = if (exhausted) quotaLimitMb * BYTES_PER_MB else 0L,
-            usedMb = if (exhausted) quotaLimitMb else 0L,
-            sessionStartTimestamp = sessionStartTimestamp
-        )
-        publishAndEnforceState(forceNotify = true)
+        saveDeltaPrefsLocked()
     }
 
-    private suspend fun measureWifiUsageAndEvaluate(forceFirebaseSync: Boolean) {
+    private fun saveDeltaPrefsLocked() {
+        trafficPrefs.edit()
+            .putString(KEY_ACTIVE_USER, activeUsername)
+            .putLong(KEY_BASE_USED_BYTES, baseUsedBytes)
+            .putLong(KEY_PENDING_DELTA_BYTES, pendingDeltaBytes)
+            .putLong(KEY_LAST_TRAFFIC_TOTAL, lastTrafficTotalBytes)
+            .putLong(KEY_INITIAL_FIREBASE_BYTES, initialFirebaseBytes)
+            .putLong(KEY_STATS_WINDOW_START_MS, statsWindowStartMs)
+            .apply()
+    }
+
+    private suspend fun measureWifiUsageAndSync(forceFirebaseSync: Boolean) {
         val hasUsageAccess = QuotaServiceController.hasUsageAccessPermission(applicationContext)
+        val now = System.currentTimeMillis()
         var crossedLimitNow = false
 
         stateMutex.withLock {
-            val baseStart = if (sessionStartTimestamp > 0L) {
-                sessionStartTimestamp
-            } else {
-                System.currentTimeMillis().also { sessionStartTimestamp = it }
-            }
+            isWifiConnected = checkCurrentWifiConnected()
+            val trafficTotal = safeTotalRxTxBytes()
+            val isAllowedToCount = isWifiConnected &&
+                userIsActive &&
+                !QuotaRuntimeState.status.value.isVpnBlocking
 
-            val measuredWifiBytes: Long = if (hasUsageAccess) {
-                queryWifiBytesViaNetworkStats(baseStart)
-            } else {
-                // Fallback TrafficStats delta while user hasn't granted Usage Access yet
-                if (isWifiConnected && userIsActive && !QuotaRuntimeState.status.value.isVpnBlocking) {
-                    val curRx = safeTotalRxBytes()
-                    val curTx = safeTotalTxBytes()
-                    if (curRx >= 0L && curTx >= 0L) {
-                        if (lastRxBytes >= 0L && lastTxBytes >= 0L) {
-                            val dRx = if (curRx >= lastRxBytes) curRx - lastRxBytes else 0L
-                            val dTx = if (curTx >= lastTxBytes) curTx - lastTxBytes else 0L
-                            fallbackPendingBytes += (dRx + dTx)
-                        }
-                        lastRxBytes = curRx
-                        lastTxBytes = curTx
+            if (isAllowedToCount) {
+                // Primary real-time byte delta via TrafficStats (persisted in SharedPreferences)
+                if (trafficTotal >= 0L) {
+                    if (lastTrafficTotalBytes >= 0L && trafficTotal >= lastTrafficTotalBytes) {
+                        val delta = trafficTotal - lastTrafficTotalBytes
+                        pendingDeltaBytes += delta
                     }
+                    lastTrafficTotalBytes = trafficTotal
                 }
-                (firebaseUsedMb * BYTES_PER_MB) + fallbackPendingBytes
-            }
 
-            // Never drop below Firebase-stored MB unless admin reset session_start_timestamp
-            val effectiveBytes = maxOf(
-                measuredWifiBytes + simulatedExtraBytes,
-                if (hasUsageAccess) measuredWifiBytes + simulatedExtraBytes else (firebaseUsedMb * BYTES_PER_MB) + simulatedExtraBytes
-            )
-            val prevBytes = currentUsedBytes
-            currentUsedBytes = effectiveBytes
+                val trafficTotalBytes = (baseUsedBytes + pendingDeltaBytes).coerceAtLeast(0L)
 
-            val limitBytes = quotaLimitMb * BYTES_PER_MB
-            if (prevBytes < limitBytes && effectiveBytes >= limitBytes) {
-                crossedLimitNow = true
+                // Secondary accuracy cross-check via NetworkStatsManager (TYPE_WIFI) when Usage Access is granted
+                val statsTotalBytes = if (hasUsageAccess) {
+                    val windowBytes = queryWifiBytesViaNetworkStats(statsWindowStartMs, now)
+                    (initialFirebaseBytes + windowBytes).coerceAtLeast(0L)
+                } else {
+                    0L
+                }
+
+                val prevBytes = currentUsedBytes
+                currentUsedBytes = maxOf(prevBytes, trafficTotalBytes, statsTotalBytes)
+
+                // Keep delta state aligned if NetworkStatsManager captured extra bytes
+                if (currentUsedBytes > trafficTotalBytes) {
+                    pendingDeltaBytes = (currentUsedBytes - baseUsedBytes).coerceAtLeast(0L)
+                }
+                saveDeltaPrefsLocked()
+
+                val limitBytes = quotaLimitMb * BYTES_PER_MB
+                if (prevBytes < limitBytes && currentUsedBytes >= limitBytes) {
+                    crossedLimitNow = true
+                }
+            } else {
+                // Keep baseline aligned while blocked or offline so non-counted traffic is ignored
+                if (trafficTotal >= 0L) {
+                    lastTrafficTotalBytes = trafficTotal
+                    saveDeltaPrefsLocked()
+                }
             }
         }
+
+        publishAndEnforceState(forceNotify = false)
 
         if (crossedLimitNow || forceFirebaseSync) {
-            syncUsedMbToFirebase(forceImmediate = true)
+            syncUsedMbToFirebase(forceImmediate = crossedLimitNow)
         }
-        publishAndEnforceState(forceNotify = false)
     }
 
-    private fun queryWifiBytesViaNetworkStats(startTimeMs: Long): Long {
-        val manager = networkStatsManager ?: return (firebaseUsedMb * BYTES_PER_MB)
-        val endTimeMs = System.currentTimeMillis()
+    private fun queryWifiBytesViaNetworkStats(startTimeMs: Long, endTimeMs: Long): Long {
+        val manager = networkStatsManager ?: return 0L
         if (endTimeMs <= startTimeMs) return 0L
         return try {
             @Suppress("DEPRECATION")
@@ -364,51 +407,44 @@ class QuotaMonitorService : Service() {
                 0L
             }
         } catch (_: SecurityException) {
-            (firebaseUsedMb * BYTES_PER_MB) + fallbackPendingBytes
+            0L
         } catch (_: RemoteException) {
-            (firebaseUsedMb * BYTES_PER_MB) + fallbackPendingBytes
+            0L
         } catch (_: Exception) {
-            (firebaseUsedMb * BYTES_PER_MB) + fallbackPendingBytes
+            0L
         }
     }
 
     private suspend fun syncUsedMbToFirebase(forceImmediate: Boolean) {
         val usernameSnap: String
-        val demoSnap: Boolean
-        val computedUsedMb: Long
-        val previousFirebaseMb: Long
+        val computedUsedMb: Double
+        val previousFirebaseMb: Double
+        val syncedBytesSnap: Long
 
         stateMutex.withLock {
             usernameSnap = activeUsername
-            demoSnap = isDemoAccount
-            computedUsedMb = currentUsedBytes / BYTES_PER_MB
+            syncedBytesSnap = currentUsedBytes
+            computedUsedMb = roundMbTo2Decimals(
+                syncedBytesSnap.toDouble() / BYTES_PER_MB.toDouble()
+            )
             previousFirebaseMb = firebaseUsedMb
         }
 
         if (usernameSnap.isBlank()) return
 
-        if (demoSnap) {
-            val now = System.currentTimeMillis()
-            stateMutex.withLock {
-                firebaseUsedMb = computedUsedMb
-                lastSyncEpochMs = now
-                if (forceImmediate) {
-                    syncStatusMessage = "وضع الحساب التجريبي (محلي)"
-                }
-            }
-            preferences.updateLocalUsage(computedUsedMb, now)
-            publishAndEnforceState(forceNotify = false)
-            return
-        }
-
-        if (computedUsedMb != previousFirebaseMb || forceImmediate) {
+        val changed = abs(computedUsedMb - previousFirebaseMb) >= 0.01
+        if (changed || forceImmediate) {
             val result = firebaseRepo.updateUsedMb(usernameSnap, computedUsedMb)
             val now = System.currentTimeMillis()
             if (result.isSuccess) {
+                val formattedMb = String.format(Locale.US, "%.2f", computedUsedMb)
                 stateMutex.withLock {
                     firebaseUsedMb = computedUsedMb
+                    baseUsedBytes = syncedBytesSnap
+                    pendingDeltaBytes = (currentUsedBytes - syncedBytesSnap).coerceAtLeast(0L)
                     lastSyncEpochMs = now
-                    syncStatusMessage = "تمت المزامنة مع Firebase ($computedUsedMb ميجابايت)"
+                    syncStatusMessage = "تمت المزامنة مع Firebase ($formattedMb ميجابايت)"
+                    saveDeltaPrefsLocked()
                 }
                 preferences.updateLocalUsage(computedUsedMb, now)
             } else {
@@ -443,7 +479,6 @@ class QuotaMonitorService : Service() {
         val updated = current.copy(
             isLoggedIn = activeUsername.isNotBlank(),
             username = activeUsername,
-            isDemo = isDemoAccount,
             quotaLimitMb = quotaLimitMb,
             usedBytes = currentUsedBytes,
             isActive = userIsActive,
@@ -471,10 +506,13 @@ class QuotaMonitorService : Service() {
                 serviceScope.launch {
                     stateMutex.withLock {
                         isWifiConnected = true
-                        lastRxBytes = safeTotalRxBytes()
-                        lastTxBytes = safeTotalTxBytes()
+                        val total = safeTotalRxTxBytes()
+                        if (total >= 0L) {
+                            lastTrafficTotalBytes = total
+                            saveDeltaPrefsLocked()
+                        }
                     }
-                    measureWifiUsageAndEvaluate(forceFirebaseSync = false)
+                    measureWifiUsageAndSync(forceFirebaseSync = false)
                 }
             }
 
@@ -497,20 +535,32 @@ class QuotaMonitorService : Service() {
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun checkCurrentWifiConnected(): Boolean {
-        val activeNetwork = connectivityManager.activeNetwork ?: return false
-        val caps = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
-        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        val activeNetwork = connectivityManager.activeNetwork
+        val activeCaps = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
+        if (activeCaps != null && activeCaps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            return true
+        }
+        return try {
+            connectivityManager.allNetworks.any { net ->
+                val caps = connectivityManager.getNetworkCapabilities(net)
+                caps != null &&
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 
-    private fun safeTotalRxBytes(): Long {
-        val value = TrafficStats.getTotalRxBytes()
-        return if (value == TrafficStats.UNSUPPORTED.toLong()) -1L else value
-    }
-
-    private fun safeTotalTxBytes(): Long {
-        val value = TrafficStats.getTotalTxBytes()
-        return if (value == TrafficStats.UNSUPPORTED.toLong()) -1L else value
+    private fun safeTotalRxTxBytes(): Long {
+        val rx = TrafficStats.getTotalRxBytes()
+        val tx = TrafficStats.getTotalTxBytes()
+        if (rx == TrafficStats.UNSUPPORTED.toLong() || tx == TrafficStats.UNSUPPORTED.toLong()) {
+            return -1L
+        }
+        return (rx + tx).coerceAtLeast(0L)
     }
 
     override fun onDestroy() {

@@ -31,8 +31,6 @@ import androidx.compose.material.icons.rounded.DataUsage
 import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.NotificationsActive
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Speed
@@ -87,7 +85,6 @@ fun DashboardScreen(
     onOpenVpnSettings: () -> Unit,
     onOpenSetupGuide: () -> Unit,
     onSyncNow: () -> Unit,
-    onToggleDemoSimulation: (exhausted: Boolean) -> Unit,
     onLogout: () -> Unit
 ) {
     val animatedProgress by animateFloatAsState(
@@ -148,11 +145,7 @@ fun DashboardScreen(
                     }
                     Column {
                         Text(
-                            text = if (snapshot.isDemo) {
-                                "${snapshot.username} (حساب تجريبي)"
-                            } else {
-                                snapshot.username
-                            },
+                            text = snapshot.username,
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onBackground
                         )
@@ -196,86 +189,6 @@ fun DashboardScreen(
                 }
             }
 
-            // Demo User Simulation Controls (ONLY visible for test user)
-            if (snapshot.isDemo) {
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Science,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                            Text(
-                                text = "أدوات اختبار الحساب التجريبي",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                        Text(
-                            text = "يعمل عدّاد الشبكة وخدمة حظر الـ VPN بشكل حقيقي، ويمكنك اختبار الحظر وإعادة التفعيل الفوري بضغطة واحدة.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.9f)
-                        )
-                        if (!snapshot.shouldBlockTraffic) {
-                            Button(
-                                onClick = { onToggleDemoSimulation(true) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.error,
-                                    contentColor = MaterialTheme.colorScheme.onError
-                                ),
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(50.dp)
-                                    .testTag("simulate_quota_exhausted_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Block,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.size(8.dp))
-                                Text("محاكاة انتهاء الباقة (تجربة الحظر)")
-                            }
-                        } else {
-                            Button(
-                                onClick = { onToggleDemoSimulation(false) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondary,
-                                    contentColor = MaterialTheme.colorScheme.onSecondary
-                                ),
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(50.dp)
-                                    .testTag("reset_demo_quota_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Refresh,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.size(8.dp))
-                                Text("إعادة تعيين الباقة التجريبية (50 ميجابايت)")
-                            }
-                        }
-                    }
-                }
-            }
-
             // VPN Permission Prompt
             if (!snapshot.vpnPermissionGranted) {
                 PermissionActionCard(
@@ -294,7 +207,7 @@ fun DashboardScreen(
                 PermissionActionCard(
                     icon = Icons.Rounded.DataUsage,
                     title = "صلاحية الوصول لبيانات الاستخدام (Usage Access)",
-                    description = "افتح الإعدادات واختر \"باقة العائلة\" ثم فعّل \"السماح بالوصول إلى بيانات الاستخدام\" لكي يحسب NetworkStatsManager استهلاك الواي فاي بدقة.",
+                    description = "افتح الإعدادات واختر \"جيجاتك\" ثم فعّل \"السماح بالوصول إلى بيانات الاستخدام\" لكي يحسب التطبيق استهلاك الواي فاي بأعلى دقة.",
                     buttonLabel = "فتح إعدادات الوصول لبيانات الاستخدام",
                     isErrorContainer = false,
                     buttonTestTag = "grant_usage_access_button",
@@ -496,13 +409,12 @@ fun DashboardScreen(
 
                     StatusInfoRow(
                         icon = if (snapshot.isWifiConnected) Icons.Rounded.Wifi else Icons.Rounded.WifiOff,
-                        title = "قياس بيانات الواي فاي (NetworkStatsManager)",
+                        title = "قياس بيانات الواي فاي (TrafficStats + NetworkStats)",
                         value = when {
-                            !snapshot.hasUsageAccessPermission -> "بانتظار صلاحية الوصول لبيانات الاستخدام"
-                            snapshot.isWifiConnected -> "متصل بالواي فاي • قياس دقيق منذ بداية الجلسة"
+                            snapshot.isWifiConnected -> "متصل بالواي فاي • قياس لحظي كل ١٥ ثانية"
                             else -> "غير متصل بالواي فاي حالياً"
                         },
-                        tint = if (snapshot.isWifiConnected && snapshot.hasUsageAccessPermission) {
+                        tint = if (snapshot.isWifiConnected) {
                             Emerald400
                         } else {
                             Amber400
@@ -511,7 +423,7 @@ fun DashboardScreen(
 
                     StatusInfoRow(
                         icon = if (snapshot.isVpnBlocking) Icons.Rounded.Lock else Icons.Rounded.Speed,
-                        title = "حالة جدار الحماية (باقة العائلة VPN)",
+                        title = "حالة جدار الحماية (جيجاتك VPN)",
                         value = if (snapshot.isVpnBlocking) {
                             "وضع الحظر نشط (10.0.0.2/32) • تم منع جميع التطبيقات"
                         } else {
@@ -530,7 +442,7 @@ fun DashboardScreen(
                     StatusInfoRow(
                         icon = Icons.Rounded.CloudDone,
                         title = "المزامنة الفورية",
-                        value = "${snapshot.syncStatusMessage.ifBlank { "كل ٦٠ ثانية + تحديث فوري" }} ($syncTimeLabel)",
+                        value = "${snapshot.syncStatusMessage.ifBlank { "كل ١٥ ثانية + تحديث فوري" }} ($syncTimeLabel)",
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }

@@ -102,7 +102,7 @@ fun SetupGuideDialog(
                             text = if (isFirebaseConfigured) {
                                 "تم اكتشاف ملف google-services.json وربط Firebase بنجاح."
                             } else {
-                                "ملف google-services.json غير موجود بعد. يمكنك تجربة الحساب التجريبي (test / 123) فوراً أو اتباع الخطوات التالية:"
+                                "ملف google-services.json غير موجود بعد. اتبع الخطوات التالية لإعداده:"
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
